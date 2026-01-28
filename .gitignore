@@ -1,0 +1,11 @@
+lazy-lock.json.bak
+*.log
+
+.local/share/nvim/
+.local/state/nvim/
+.cache/nvim/
+
+share/nvim/
+state/nvim/
+cache/nvim/
+
