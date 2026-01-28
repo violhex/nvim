@@ -9,3 +9,4 @@ share/nvim/
 state/nvim/
 cache/nvim/
 
+nvim-pack-lock.json
