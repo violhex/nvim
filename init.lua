@@ -8,6 +8,8 @@ vim.o.softtabstop = 4
 vim.o.shiftwidth = 4
 vim.o.signcolumn = "yes"
 vim.o.winborder = "rounded"
+
+vim.opt.background = "dark"
 vim.opt.clipboard = "unnamedplus"
 
 local function pack_clean()
@@ -51,6 +53,9 @@ vim.pack.add({
 	{ src = "https://github.com/chomosuke/typst-preview.nvim" },
 	{ src = "https://github.com/L3MON4D3/luasnip" },
 	{ src = "https://github.com/stevearc/conform.nvim" },
+	{ src = "https://github.com/ellisonleao/gruvbox.nvim" },
+	{ src = "https://github.com/ramojus/mellifluous.nvim" },
+	{ src = "https://github.com/Mofiqul/vscode.nvim" }
 })
 
 require("conform").setup({
@@ -110,7 +115,7 @@ require("lazydev").setup({
 local ls = require("luasnip")
 ls.config.set_config({
 	history = true,
-	updateevents = "TextChanged,TextChangedI",
+	updateevents = "TextChangedI",
 	enable_autosnippets = true,
 })
 require("luasnip.loaders.from_lua").load({
@@ -122,11 +127,7 @@ require("blink.cmp").setup({
 	keymap = { preset = "super-tab" },
 	completion = { documentation = { auto_show = true } },
 	fuzzy = { implementation = "prefer_rust_with_warning" },
-	snippets = {
-		expand = function(snippet)
-			require("luasnip").lsp_expand(snippet.body)
-		end,
-	},
+	snippets = { preset = "luasnip" },
 	sources = {
 		default = { "lazydev", "lsp", "path", "snippets", "buffer" },
 		per_filetype = {
@@ -165,7 +166,31 @@ require("kanagawa").setup({
 		light = "lotus",
 	},
 })
-vim.cmd.colorscheme("kanagawa")
+-- vim.cmd.colorscheme("kanagawa")
+
+require("gruvbox").setup({
+	contrast = "medium",
+	italic = {
+		strings = false,
+		comments = true,
+		operators = false,
+		folds = true
+	},
+	transparent_mode = false
+})
+-- vim.cmd.colorscheme("gruvbox")
+
+require("mellifluous").setup({})
+-- vim.cmd.colorscheme("mellifluous")
+
+require("vscode").setup({
+    transparent = false,
+    italic_comments = true,
+    italic_inlayhints = true,
+    underline_links = true,
+    terminal_colors = true,
+})
+vim.cmd.colorscheme("vscode")
 
 require("typst-preview").setup()
 
