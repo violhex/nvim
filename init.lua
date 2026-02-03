@@ -12,6 +12,185 @@ vim.o.winborder = "rounded"
 vim.opt.background = "dark"
 vim.opt.clipboard = "unnamedplus"
 
+local function pack_update()
+	local uv = vim.uv or vim.loop
+
+	local function is_dir(p)
+		local st = uv.fs_stat(p)
+		return st and st.type == "directory"
+	end
+
+	local function is_file(p)
+		local st = uv.fs_stat(p)
+		return st and st.type == "file"
+	end
+
+	local function joinpath(...)
+		return table.concat({ ... }, "/")
+	end
+
+	local function list_dirs(path)
+		local dirs = {}
+		local fd = uv.fs_scandir(path)
+		if not fd then return dirs end
+		while true do
+			local name, t = uv.fs_scandir_next(fd)
+			if not name then break end
+			if t == "directory" then
+				table.insert(dirs, joinpath(path, name))
+			end
+		end
+		return dirs
+	end
+
+	local pack_root = joinpath(vim.fn.stdpath("data"), "site", "pack")
+	if not is_dir(pack_root) then
+		vim.notify(("pack root not found: %s"):format(pack_root), vim.log.levels.WARN)
+		return
+	end
+
+	local plugin_dirs = {}
+	for _, packname_dir in ipairs(list_dirs(pack_root)) do
+		for _, section in ipairs({ "start", "opt" }) do
+			local section_dir = joinpath(packname_dir, section)
+			if is_dir(section_dir) then
+				for _, plugdir in ipairs(list_dirs(section_dir)) do
+					table.insert(plugin_dirs, plugdir)
+				end
+			end
+		end
+	end
+
+	if #plugin_dirs == 0 then
+		vim.notify("No plugins found under pack/*/(start|opt)/*", vim.log.levels.INFO)
+		return
+	end
+
+	local repos = {}
+	for _, dir in ipairs(plugin_dirs) do
+		if is_dir(joinpath(dir, ".git")) or is_file(joinpath(dir, ".git")) then
+			table.insert(repos, dir)
+		end
+	end
+
+	if #repos == 0 then
+		vim.notify("No git repos found (no plugins to update)", vim.log.levels.INFO)
+		return
+	end
+
+	local choice = vim.fn.confirm(
+		("[PROMPT] Update %d plugins via git pull?"):format(#repos),
+		"&Yes\n&No",
+		2
+	)
+	if choice ~= 1 then
+		vim.notify("Skipping plugin update", vim.log.levels.INFO)
+		return
+	end
+
+	local results = {
+		updated = {},
+		uptodate = {},
+		failed = {},
+	}
+	local completed = 0
+	local total = #repos
+
+	local function classify(dir, code, out, err)
+		local name = vim.fn.fnamemodify(dir, ":t")
+		local combined = (out or "") .. "\n" .. (err or "")
+		combined = combined:gsub("%z", "")
+
+		if code ~= 0 then
+			local error_msg = combined:match("fatal: (.-)[\n$]")
+				or combined:match("error: (.-)[\n$]")
+				or combined:match("Not possible to fast%-forward")
+				or "Unknown error"
+			table.insert(results.failed, { name = name, msg = error_msg })
+		elseif combined:match("Already up to date") or combined:match("Already up%-to%-date") then
+			table.insert(results.uptodate, name)
+		elseif combined:match("Fast%-forward") or combined:match("Updating") or combined:match("%d+ file[s]? changed") then
+			table.insert(results.updated, name)
+		else
+			table.insert(results.uptodate, name)
+		end
+	end
+
+	local function show_final_report()
+		local lines = {}
+		table.insert(lines,
+			("[PACK UPDATE] Updated: %d | Up-to-date: %d | Failed: %d")
+			:format(#results.updated, #results.uptodate, #results.failed)
+		)
+
+		if #results.updated > 0 then
+			table.insert(lines, "Updated: " .. table.concat(results.updated, ", "))
+		end
+
+		if #results.failed > 0 then
+			table.insert(lines, "Failed: " .. table.concat(
+				vim.tbl_map(function(x) return x.name end, results.failed), ", "
+			))
+		end
+
+		vim.notify(
+			table.concat(lines, "\n"),
+			(#results.failed > 0) and vim.log.levels.WARN or vim.log.levels.INFO
+		)
+
+		if #results.failed > 0 then
+			local buf = vim.api.nvim_create_buf(false, true)
+			vim.api.nvim_buf_set_name(buf, "PackUpdateFailures")
+			vim.api.nvim_set_current_buf(buf)
+
+			local detail = {
+				"vim.pack plugin update failures",
+				"================================",
+				""
+			}
+
+			for _, f in ipairs(results.failed) do
+				table.insert(detail, ("== %s =="):format(f.name))
+				table.insert(detail, f.msg)
+				table.insert(detail, "")
+			end
+
+			vim.api.nvim_buf_set_lines(buf, 0, -1, false, detail)
+			vim.bo[buf].buftype = "nofile"
+			vim.bo[buf].bufhidden = "wipe"
+			vim.bo[buf].swapfile = false
+			vim.bo[buf].filetype = "text"
+		end
+	end
+
+	vim.notify(("Updating %d plugins…"):format(#repos), vim.log.levels.INFO)
+
+	for _, dir in ipairs(repos) do
+		vim.system(
+			{ "git", "-C", dir, "pull", "--ff-only", "--rebase=false" },
+			{
+				text = true,
+				timeout = 30000,
+			},
+			function(res)
+				if res.code == 124 or (res.signal == 15 and res.code ~= 0) then
+					local name = vim.fn.fnamemodify(dir, ":t")
+					table.insert(results.failed, { name = name, msg = "Timeout (30s)" })
+				else
+					classify(dir, res.code, res.stdout, res.stderr)
+				end
+
+				vim.schedule(function()
+					completed = completed + 1
+					if completed == total then
+						show_final_report()
+					end
+				end)
+			end
+		)
+	end
+end
+
 local function pack_clean()
 	local activePlugins = {}
 	local unusedPlugins = {}
@@ -55,7 +234,8 @@ vim.pack.add({
 	{ src = "https://github.com/stevearc/conform.nvim" },
 	{ src = "https://github.com/ellisonleao/gruvbox.nvim" },
 	{ src = "https://github.com/ramojus/mellifluous.nvim" },
-	{ src = "https://github.com/Mofiqul/vscode.nvim" }
+	{ src = "https://github.com/Mofiqul/vscode.nvim" },
+	{ src = "https://github.com/folke/tokyonight.nvim" }
 })
 
 require("conform").setup({
@@ -184,13 +364,19 @@ require("mellifluous").setup({})
 -- vim.cmd.colorscheme("mellifluous")
 
 require("vscode").setup({
-    transparent = false,
-    italic_comments = true,
-    italic_inlayhints = true,
-    underline_links = true,
-    terminal_colors = true,
+	transparent = false,
+	italic_comments = true,
+	italic_inlayhints = true,
+	underline_links = true,
+	terminal_colors = true,
 })
-vim.cmd.colorscheme("vscode")
+-- vim.cmd.colorscheme("vscode")
+
+require("tokyonight").setup({
+	style = "night",
+	transparent = true,
+})
+vim.cmd.colorscheme("tokyonight")
 
 require("typst-preview").setup()
 
@@ -203,18 +389,26 @@ require("mini.surround").setup()
 require("mini.statusline").setup()
 
 vim.keymap.set("n", "<leader>pc", pack_clean)
+vim.keymap.set("n", "<leader>pu", pack_update, { desc = "Pack: update plugins (git pull)" })
+
 vim.keymap.set("n", "<leader>f", ":Oil<CR>")
 vim.keymap.set("n", "<leader>ff", ":Pick files<CR>")
 vim.keymap.set("n", "<leader>h", ":Pick help<CR>")
 vim.keymap.set("n", "<leader>gg", ":Pick grep_live<CR>")
 vim.keymap.set("n", "<leader>bb", ":Pick buffers<CR>")
+
 vim.keymap.set({ "n", "v" }, "<C-c>", '"+y', { silent = true })
 vim.keymap.set("n", "<C-c><C-c>", '"+yy', { silent = true })
+
 vim.keymap.set("n", "<leader>q", ":Trouble diagnostics toggle<CR>")
+vim.keymap.set("n", "<leader>e", vim.diagnostic.open_float)
+
 vim.keymap.set("n", "<leader>ih", function()
 	vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled({ bufnr = 0 }), { bufnr = 0 })
 end)
+
 vim.keymap.set("n", "<leader>tp", "<cmd>TypstPreview<CR>")
+
 vim.keymap.set("n", "gd", vim.lsp.buf.definition)
 vim.keymap.set("n", "gD", vim.lsp.buf.declaration)
 vim.keymap.set("n", "gr", vim.lsp.buf.references)
@@ -222,13 +416,13 @@ vim.keymap.set("n", "gi", vim.lsp.buf.implementation)
 vim.keymap.set("n", "K", vim.lsp.buf.hover)
 vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename)
 vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action)
+
 vim.keymap.set("n", "<leader>lf", function()
 	require("conform").format({
 		timeout_ms = 2000,
 		lsp_fallback = true,
 	})
 end)
-vim.keymap.set("n", "<leader>e", vim.diagnostic.open_float)
 
 vim.diagnostic.config({
 	virtual_text = false,
